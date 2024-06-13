@@ -48,6 +48,7 @@ from ...utils import (
 )
 from .configuration_llama import LlamaConfig
 
+import numpy as np
 
 if is_flash_attn_2_available():
     from flash_attn import flash_attn_func, flash_attn_varlen_func
@@ -947,6 +948,7 @@ class LlamaModel(LlamaPreTrainedModel):
         all_self_attns = () if output_attentions else None
         next_decoder_cache = None
 
+        gpu_util = list()
         for decoder_layer in self.layers:
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
@@ -972,7 +974,7 @@ class LlamaModel(LlamaPreTrainedModel):
                     use_cache=use_cache,
                     cache_position=cache_position,
                 )
-
+            gpu_util.append(torch.cuda.utilization(torch.cuda.current_device()))
             hidden_states = layer_outputs[0]
 
             if use_cache:
@@ -998,7 +1000,7 @@ class LlamaModel(LlamaPreTrainedModel):
             past_key_values=next_cache,
             hidden_states=all_hidden_states,
             attentions=all_self_attns,
-        )
+        ), np.average(gpu_util)
 
     def _update_causal_mask(
         self,
@@ -1159,7 +1161,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-        outputs = self.model(
+        outputs, gpu_utils = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             position_ids=position_ids,
@@ -1204,7 +1206,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
-        )
+        ), gpu_utils
 
     def prepare_inputs_for_generation(
         self,
