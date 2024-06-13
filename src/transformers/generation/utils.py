@@ -1897,7 +1897,7 @@ class GenerationMixin:
             # 13. run sample (it degenerates to greedy search when `generation_config.do_sample=False`)
             seq_len = input_ids.shape[-1]
             
-            result, decoding_step, gpu_utils, timer_result = self._sample(
+            result, timer_result = self._sample(
                 input_ids,
                 logits_processor=prepared_logits_processor,
                 logits_warper=prepared_logits_warper,
@@ -2052,7 +2052,7 @@ class GenerationMixin:
             if isinstance(result, ModelOutput) and hasattr(result, "past_key_values"):
                 if isinstance(result.past_key_values, DynamicCache):
                     result.past_key_values = result.past_key_values.to_legacy_cache()
-        return result, [seq_len, result.shape[-1], decoding_step], np.average(gpu_utils), timer_result
+        return result, timer_result
 
     def _has_unfinished_sequences(self, this_peer_finished: bool, synced_gpus: bool, device: torch.device) -> bool:
         """
@@ -2629,8 +2629,6 @@ class GenerationMixin:
         unfinished_sequences = torch.ones(batch_size, dtype=torch.long, device=input_ids.device)
         model_kwargs = self._get_initial_cache_position(input_ids, model_kwargs)
 
-        decoding_step = 0
-        gpu_utils = list()
         timer_result = dict()
         torch.cuda.synchronize()
         start_time = time.time()
@@ -2640,14 +2638,12 @@ class GenerationMixin:
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
 
             # forward pass to get next token
-            outputs, gpu_util = self(
+            outputs = self(
                 **model_inputs,
                 return_dict=True,
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
             )
-            gpu_utils.append(gpu_util)
-            decoding_step += 1
             if synced_gpus and this_peer_finished:
                 continue  # don't waste resources running the code we don't need
 
@@ -2724,7 +2720,7 @@ class GenerationMixin:
                     cross_attentions=cross_attentions,
                     decoder_hidden_states=decoder_hidden_states,
                     past_key_values=model_kwargs.get("past_key_values"),
-                ), decoding_step, gpu_utils, timer_result
+                ), timer_result
             else:
                 return GenerateDecoderOnlyOutput(
                     sequences=input_ids,
@@ -2733,9 +2729,9 @@ class GenerationMixin:
                     attentions=decoder_attentions,
                     hidden_states=decoder_hidden_states,
                     past_key_values=model_kwargs.get("past_key_values"),
-                ), decoding_step, gpu_utils, timer_result
+                ), timer_result
         else:
-            return input_ids, decoding_step, gpu_utils, timer_result
+            return input_ids, timer_result
 
     def _temporary_reorder_cache(self, past_key_values, beam_idx):
         """
