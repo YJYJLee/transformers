@@ -1893,7 +1893,9 @@ class GenerationMixin:
             )
 
             # 13. run sample (it degenerates to greedy search when `generation_config.do_sample=False`)
-            result = self._sample(
+            seq_len = input_ids.shape[-1]
+                        
+            result, decoding_step = self._sample(
                 input_ids,
                 logits_processor=prepared_logits_processor,
                 logits_warper=prepared_logits_warper,
@@ -2048,7 +2050,7 @@ class GenerationMixin:
             if isinstance(result, ModelOutput) and hasattr(result, "past_key_values"):
                 if isinstance(result.past_key_values, DynamicCache):
                     result.past_key_values = result.past_key_values.to_legacy_cache()
-        return result
+        return result, [seq_len, result.shape[-1], decoding_step]
 
     def _has_unfinished_sequences(self, this_peer_finished: bool, synced_gpus: bool, device: torch.device) -> bool:
         """
@@ -2624,7 +2626,7 @@ class GenerationMixin:
         this_peer_finished = False
         unfinished_sequences = torch.ones(batch_size, dtype=torch.long, device=input_ids.device)
         model_kwargs = self._get_initial_cache_position(input_ids, model_kwargs)
-
+        decoding_step = 0
         while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
             # prepare model inputs
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
@@ -2636,7 +2638,7 @@ class GenerationMixin:
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
             )
-
+            decoding_step += 1
             if synced_gpus and this_peer_finished:
                 continue  # don't waste resources running the code we don't need
 
@@ -2712,7 +2714,7 @@ class GenerationMixin:
                     cross_attentions=cross_attentions,
                     decoder_hidden_states=decoder_hidden_states,
                     past_key_values=model_kwargs.get("past_key_values"),
-                )
+                ), decoding_step
             else:
                 return GenerateDecoderOnlyOutput(
                     sequences=input_ids,
@@ -2721,9 +2723,9 @@ class GenerationMixin:
                     attentions=decoder_attentions,
                     hidden_states=decoder_hidden_states,
                     past_key_values=model_kwargs.get("past_key_values"),
-                )
+                ), decoding_step
         else:
-            return input_ids
+            return input_ids, decoding_step
 
     def _temporary_reorder_cache(self, past_key_values, beam_idx):
         """
