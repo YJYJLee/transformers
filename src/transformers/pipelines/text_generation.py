@@ -347,7 +347,7 @@ class TextGenerationPipeline(Pipeline):
                 generate_kwargs["min_length"] += prefix_length
 
         # BS x SL
-        generated_sequence = self.model.generate(input_ids=input_ids, attention_mask=attention_mask, **generate_kwargs)
+        generated_sequence, _ = self.model.generate(input_ids=input_ids, attention_mask=attention_mask, **generate_kwargs)
         out_b = generated_sequence.shape[0]
         if self.framework == "pt":
             generated_sequence = generated_sequence.reshape(in_b, out_b // in_b, *generated_sequence.shape[1:])
