@@ -265,6 +265,7 @@ class LlamaAttention(nn.Module):
         self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias)
         self.o_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=config.attention_bias)
         self._init_rope()
+        self.past_key_values = DynamicCache()
 
     def _init_rope(self):
         if self.config.rope_scaling is None:
@@ -580,14 +581,14 @@ class LlamaSdpaAttention(LlamaAttention):
     `LlamaAttention` as the weights of the module stays untouched. The only changes are on the forward pass to adapt to
     SDPA API.
     """
-
+    
     # Adapted from LlamaAttention.forward
     def forward(
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Cache] = None,
+        # past_key_value: Optional[Cache] = None,
         output_attentions: bool = False,
         use_cache: bool = False,
         cache_position: Optional[torch.LongTensor] = None,
@@ -602,7 +603,7 @@ class LlamaSdpaAttention(LlamaAttention):
                 hidden_states=hidden_states,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
-                past_key_value=past_key_value,
+                # past_key_value=past_key_value,
                 output_attentions=output_attentions,
                 use_cache=use_cache,
                 cache_position=cache_position,
@@ -622,10 +623,10 @@ class LlamaSdpaAttention(LlamaAttention):
         
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
-        if past_key_value is not None:
+        if self.past_key_values is not None:
             # sin and cos are specific to RoPE models; cache_position needed for the static cache
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-            key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+            key_states, value_states = self.past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
@@ -650,6 +651,7 @@ class LlamaSdpaAttention(LlamaAttention):
             key_states,
             value_states,
             attn_mask=causal_mask,
+            # attn_mask=self.padding_mask,
             dropout_p=self.attention_dropout if self.training else 0.0,
             is_causal=is_causal,
         )
@@ -659,7 +661,7 @@ class LlamaSdpaAttention(LlamaAttention):
 
         attn_output = self.o_proj(attn_output)
 
-        return attn_output, None, past_key_value
+        return attn_output, None #, past_key_value
 
 
 LLAMA_ATTENTION_CLASSES = {
@@ -685,7 +687,7 @@ class LlamaDecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Cache] = None,
+        # past_key_value: Optional[Cache] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
@@ -709,11 +711,11 @@ class LlamaDecoderLayer(nn.Module):
         hidden_states = self.input_layernorm(hidden_states)
 
         # Self Attention
-        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+        hidden_states, self_attn_weights = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
-            past_key_value=past_key_value,
+            # past_key_value=past_key_value,
             output_attentions=output_attentions,
             use_cache=use_cache,
             cache_position=cache_position,
@@ -731,8 +733,8 @@ class LlamaDecoderLayer(nn.Module):
         if output_attentions:
             outputs += (self_attn_weights,)
 
-        if use_cache:
-            outputs += (present_key_value,)
+        # if use_cache:
+        #     outputs += (present_key_value,)
 
         return outputs
 
@@ -895,7 +897,7 @@ class LlamaModel(LlamaPreTrainedModel):
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
+        # past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
@@ -925,12 +927,12 @@ class LlamaModel(LlamaPreTrainedModel):
             inputs_embeds = self.embed_tokens(input_ids)
 
         return_legacy_cache = False
-        if use_cache and not isinstance(past_key_values, Cache):  # kept for BC (non `Cache` `past_key_values` inputs)
-            return_legacy_cache = True
-            past_key_values = DynamicCache.from_legacy_cache(past_key_values)
+        # if use_cache and not isinstance(past_key_values, Cache):  # kept for BC (non `Cache` `past_key_values` inputs)
+        #     return_legacy_cache = True
+        #     past_key_values = DynamicCache.from_legacy_cache(past_key_values)
 
         if cache_position is None:
-            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+            past_seen_tokens = self.layers[0].self_attn.past_key_values.get_seq_length() if self.layers[0].self_attn.past_key_values is not None else 0
             cache_position = torch.arange(
                 past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
             )
@@ -938,7 +940,7 @@ class LlamaModel(LlamaPreTrainedModel):
             position_ids = cache_position.unsqueeze(0)
 
         causal_mask = self._update_causal_mask(
-            attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions
+            attention_mask, inputs_embeds, cache_position, self.layers[0].self_attn.past_key_values, output_attentions
         )
 
         # embed positions
@@ -959,7 +961,7 @@ class LlamaModel(LlamaPreTrainedModel):
                     hidden_states,
                     causal_mask,
                     position_ids,
-                    past_key_values,
+                    # past_key_values,
                     output_attentions,
                     use_cache,
                     cache_position,
@@ -969,15 +971,15 @@ class LlamaModel(LlamaPreTrainedModel):
                     hidden_states,
                     attention_mask=causal_mask,
                     position_ids=position_ids,
-                    past_key_value=past_key_values,
+                    # past_key_value=past_key_values,
                     output_attentions=output_attentions,
                     use_cache=use_cache,
                     cache_position=cache_position,
                 )
             hidden_states = layer_outputs[0]
 
-            if use_cache:
-                next_decoder_cache = layer_outputs[2 if output_attentions else 1]
+            # if use_cache:
+            #     next_decoder_cache = layer_outputs[2 if output_attentions else 1]
 
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
@@ -988,15 +990,15 @@ class LlamaModel(LlamaPreTrainedModel):
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
-        next_cache = next_decoder_cache if use_cache else None
-        if return_legacy_cache:
-            next_cache = next_cache.to_legacy_cache()
+        # next_cache = next_decoder_cache if use_cache else None
+        # if return_legacy_cache:
+        #     next_cache = next_cache.to_legacy_cache()
 
-        if not return_dict:
-            return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
+        # if not return_dict:
+        #     return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
-            past_key_values=next_cache,
+            # past_key_values=next_cache,
             hidden_states=all_hidden_states,
             attentions=all_self_attns,
         )
@@ -1093,6 +1095,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
 
         # Initialize weights and apply final processing
         self.post_init()
+        self.output = CausalLMOutputWithPast(None, None, DynamicCache(), None, None)
 
     def get_input_embeddings(self):
         return self.model.embed_tokens
@@ -1119,7 +1122,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
+        # past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
@@ -1164,7 +1167,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
             input_ids=input_ids,
             attention_mask=attention_mask,
             position_ids=position_ids,
-            past_key_values=past_key_values,
+            # past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
             output_attentions=output_attentions,
@@ -1199,10 +1202,28 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
 
+
+
+        # return loss, logits#, (outputs.past_key_values.key_cache, outputs.past_key_values.value_cache, outputs.past_key_values._seen_tokens)
+    
+        # import pdb; pdb.set_trace()
+        # self.output.loss = loss
+        # self.output.logits = logits
+        # self.output.past_key_values.key_cache = outputs.past_key_values.key_cache
+        # self.output.past_key_values.value_cache = outputs.past_key_values.value_cache
+        # self.output.past_key_values._seen_tokens = outputs.past_key_values._seen_tokens
+        # # self.output.hidden_states = outputs.hidden_states
+        # # self.output.attentions = outputs.attentions
+
+
+        # past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
+        # hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
+        # attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
+        # cross_attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
         return CausalLMOutputWithPast(
             loss=loss,
             logits=logits,
-            past_key_values=outputs.past_key_values,
+            # past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
@@ -1210,7 +1231,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
     def prepare_inputs_for_generation(
         self,
         input_ids,
-        past_key_values=None,
+        # past_key_values=None,
         attention_mask=None,
         inputs_embeds=None,
         cache_position=None,
@@ -1218,12 +1239,12 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         **kwargs,
     ):
         past_length = 0
-        if past_key_values is not None:
+        if self.model.layers[0].self_attn.past_key_values is not None:
             # Past key values are always initialized with a `Cache` object -> no need for if-else anymore
-            past_length = cache_position[0] if cache_position is not None else past_key_values.get_seq_length()
+            past_length = cache_position[0] if cache_position is not None else self.model.layers[0].self_attn.past_key_values.get_seq_length()
             max_cache_length = (
-                torch.tensor(past_key_values.get_max_length(), device=input_ids.device)
-                if past_key_values.get_max_length() is not None
+                torch.tensor(self.model.layers[0].self_attn.past_key_values.get_max_length(), device=input_ids.device)
+                if self.model.layers[0].self_attn.past_key_values.get_max_length() is not None
                 else None
             )
             cache_length = past_length if max_cache_length is None else torch.min(max_cache_length, past_length)
@@ -1252,7 +1273,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
             # create position_ids on the fly for batch generation
             position_ids = attention_mask.long().cumsum(-1) - 1
             position_ids.masked_fill_(attention_mask == 0, 1)
-            if past_key_values:
+            if self.model.layers[0].self_attn.past_key_values:
                 position_ids = position_ids[:, -input_ids.shape[1] :]
 
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
@@ -1274,7 +1295,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
             {
                 "position_ids": position_ids,
                 "cache_position": cache_position,
-                "past_key_values": past_key_values,
+                # "past_key_values": past_key_values,
                 "use_cache": use_cache,
                 "attention_mask": attention_mask,
             }

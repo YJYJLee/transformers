@@ -2629,6 +2629,15 @@ class GenerationMixin:
         unfinished_sequences = torch.ones(batch_size, dtype=torch.long, device=input_ids.device)
         model_kwargs = self._get_initial_cache_position(input_ids, model_kwargs)
 
+        for l in self.model.layers:
+            # l.self_attn.past_key_value = DynamicCache()
+            l.self_attn.past_key_values.key_cache = model_kwargs["past_key_values"].key_cache
+            l.self_attn.past_key_values.value_cache = model_kwargs["past_key_values"].value_cache
+            l.self_attn.past_key_values._seen_tokens = model_kwargs["past_key_values"]._seen_tokens
+
+        del model_kwargs["past_key_values"]
+        # del model_kwargs["cache_position"]
+
         timer_result = dict()
         torch.cuda.synchronize()
         start_time = time.time()
@@ -2644,6 +2653,13 @@ class GenerationMixin:
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
             )
+            # cache = DynamicCache()
+            # cache.key_cache = past_key_values[0]
+            # cache.value_cache = past_key_values[1]
+            # cache._seen_tokens = past_key_values[2]
+
+            # outputs = CausalLMOutputWithPast(loss, logits, cache)
+
             if synced_gpus and this_peer_finished:
                 continue  # don't waste resources running the code we don't need
 
