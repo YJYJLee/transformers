@@ -676,6 +676,7 @@ class LlamaDecoderLayer(nn.Module):
         self.hidden_size = config.hidden_size
 
         if disable_sdpa:
+            print("[YJ] Setting default attention as LlamaAttention")
             self.self_attn = LlamaAttention(config=config, layer_idx=layer_idx)
         else:
             self.self_attn = LLAMA_ATTENTION_CLASSES[config._attn_implementation](config=config, layer_idx=layer_idx)
