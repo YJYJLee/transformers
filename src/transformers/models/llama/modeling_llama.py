@@ -54,6 +54,8 @@ if is_flash_attn_2_available():
     from flash_attn import flash_attn_func, flash_attn_varlen_func
     from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input  # noqa
 
+import os
+disable_sdpa = os.environ.get('DISABLE_SDPA', False)
 
 logger = logging.get_logger(__name__)
 
@@ -674,7 +676,11 @@ class LlamaDecoderLayer(nn.Module):
         super().__init__()
         self.hidden_size = config.hidden_size
 
-        self.self_attn = LLAMA_ATTENTION_CLASSES[config._attn_implementation](config=config, layer_idx=layer_idx)
+        if disable_sdpa:
+            print("[YJ] Setting default attention as LlamaAttention")
+            self.self_attn = LlamaAttention(config=config, layer_idx=layer_idx)
+        else:
+            self.self_attn = LLAMA_ATTENTION_CLASSES[config._attn_implementation](config=config, layer_idx=layer_idx)
 
         self.mlp = LlamaMLP(config)
         self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
