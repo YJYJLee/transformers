@@ -2630,35 +2630,45 @@ class GenerationMixin:
         model_kwargs = self._get_initial_cache_position(input_ids, model_kwargs)
 
         for l in self.model.layers:
-            # l.self_attn.past_key_value = DynamicCache()
-            l.self_attn.past_key_values.key_cache = model_kwargs["past_key_values"].key_cache
-            l.self_attn.past_key_values.value_cache = model_kwargs["past_key_values"].value_cache
-            l.self_attn.past_key_values._seen_tokens = model_kwargs["past_key_values"]._seen_tokens
+            l.self_attn.past_key_values.reset()
+            # l.self_attn.past_key_values = StaticCache(self.config, max_batch_size=input_ids.shape[0], max_cache_len=1024, device=torch.device("cuda:0"), dtype=torch.float16)
+        #     # l.self_attn.past_key_values.key_cache = model_kwargs["past_key_values"].key_cache
+        #     # l.self_attn.past_key_values.value_cache = model_kwargs["past_key_values"].value_cache
+        #     # l.self_attn.past_key_values._seen_tokens = model_kwargs["past_key_values"]._seen_tokens
 
         del model_kwargs["past_key_values"]
+        del model_kwargs["attention_mask"]
         # del model_kwargs["cache_position"]
 
         timer_result = dict()
+        decoding_step = 0
         torch.cuda.synchronize()
         start_time = time.time()
 
         while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
             # prepare model inputs
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
-
+            # print(model_inputs["input_ids"].shape)
+            # print(model_inputs["position_ids"].shape)
+            if torch.max(model_kwargs['cache_position']).item()==1023:
+                return input_ids, {"Total": -1}
+            # outputs = self(
+            #     **model_inputs,
+            #     return_dict=True,
+            #     output_attentions=output_attentions,
+            #     output_hidden_states=output_hidden_states,
+            # )
             # forward pass to get next token
-            outputs = self(
+            outputs = self.forward(
                 **model_inputs,
                 return_dict=True,
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
+                decoding=True if decoding_step>0 else False
             )
-            # cache = DynamicCache()
-            # cache.key_cache = past_key_values[0]
-            # cache.value_cache = past_key_values[1]
-            # cache._seen_tokens = past_key_values[2]
 
-            # outputs = CausalLMOutputWithPast(loss, logits, cache)
+            decoding_step += 1
+
 
             if synced_gpus and this_peer_finished:
                 continue  # don't waste resources running the code we don't need
@@ -2719,6 +2729,7 @@ class GenerationMixin:
             # This is needed to properly delete outputs.logits which may be very large for first iteration
             # Otherwise a reference to outputs is kept which keeps the logits alive in the next iteration
             del outputs
+
         torch.cuda.synchronize()
         timer_result["Total"] = (time.time()-start_time)*1000
         if streamer is not None:
