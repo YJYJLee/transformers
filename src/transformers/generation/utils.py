@@ -2650,7 +2650,7 @@ class GenerationMixin:
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
             # print(model_inputs["input_ids"].shape)
             # print(model_inputs["position_ids"].shape)
-            if torch.max(model_kwargs['cache_position']).item()==1023:
+            if torch.max(model_kwargs['cache_position']).item()>=1023:
                 return input_ids, {"Total": -1}
             # outputs = self(
             #     **model_inputs,
@@ -2658,6 +2658,7 @@ class GenerationMixin:
             #     output_attentions=output_attentions,
             #     output_hidden_states=output_hidden_states,
             # )
+
             # forward pass to get next token
             outputs = self.forward(
                 **model_inputs,

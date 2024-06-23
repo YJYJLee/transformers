@@ -1287,7 +1287,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
 
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         if decoding:
-            outputs = self.model(
+            outputs = self.model.forward2(
                 input_ids=input_ids,
                 # attention_mask=attention_mask,
                 position_ids=position_ids,
@@ -1300,7 +1300,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
                 cache_position=cache_position,
             )
         else:
-            outputs = self.model.forward2(
+            outputs = self.model(
                 input_ids=input_ids,
                 # attention_mask=attention_mask,
                 position_ids=position_ids,
